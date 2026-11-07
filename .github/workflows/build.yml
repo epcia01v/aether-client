@@ -1,0 +1,58 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip project
+        run: |
+          exec > >(tee -a /tmp/all.log) 2>&1
+          ls -la
+          unzip -q -o "$(ls AetherClient-android-*.zip | sort -V | tail -1)"
+          ls -la AetherClient AetherClient/app AetherClient/app/libs
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Download Aether core
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          exec > >(tee -a /tmp/all.log) 2>&1
+          mkdir -p /tmp/aether AetherClient/app/src/main/jniLibs/arm64-v8a
+          gh release download --repo CluvexStudio/Aether \
+            --pattern 'aether-android-arm64.tar.gz' \
+            --pattern 'aether-android-arm64.tar.gz.sha256' --dir /tmp/aether
+          cd /tmp/aether
+          echo "$(cut -d' ' -f1 aether-android-arm64.tar.gz.sha256)  aether-android-arm64.tar.gz" | sha256sum -c -
+          tar -xzf aether-android-arm64.tar.gz
+          BIN=$(find . -type f -name aether | head -1)
+          test -n "$BIN"
+          cp "$BIN" "$GITHUB_WORKSPACE/AetherClient/app/src/main/jniLibs/arm64-v8a/libaether.so"
+      - name: Build debug APK
+        working-directory: AetherClient
+        run: |
+          exec > >(tee -a /tmp/all.log) 2>&1
+          gradle assembleDebug --console=plain
+      - name: Show errors in summary
+        if: failure()
+        run: |
+          {
+            echo '## آخرین خطوط لاگ (این بخش را کپی کنید)'
+            echo '```'
+            grep -n -E "^e: |error:|FAILED|What went wrong|Caused by|Could not|No such file|cannot|Exception" /tmp/all.log | head -40
+            echo '-----'
+            tail -n 40 /tmp/all.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AetherClient-debug-apk
+          path: AetherClient/app/build/outputs/apk/debug/*.apk
