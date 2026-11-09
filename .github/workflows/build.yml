@@ -1,0 +1,75 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip project
+        run: |
+          exec > >(tee -a /tmp/all.log) 2>&1
+          ls -la
+          unzip -q -o "$(ls EpicClient-android-*.zip | sort -V | tail -1)"
+          ls -la EpicClient EpicClient/app EpicClient/app/libs
+      - name: Write license keys
+        env:
+          EPIC_AES_KEY: ${{ secrets.EPIC_AES_KEY }}
+          EPIC_PUB_KEY: ${{ secrets.EPIC_PUB_KEY }}
+        run: |
+          exec > >(tee -a /tmp/all.log) 2>&1
+          if [ -z "$EPIC_AES_KEY" ] || [ -z "$EPIC_PUB_KEY" ]; then
+            echo "WARNING: EPIC_AES_KEY or EPIC_PUB_KEY secret is empty; configs will not import in this build."
+          fi
+          cat > EpicClient/app/src/main/java/com/epicvpn/app/Secret.kt <<KOT
+          package com.epicvpn.app
+
+          object Secret {
+              const val AES_KEY = "$EPIC_AES_KEY"
+              const val PUB_KEY = "$EPIC_PUB_KEY"
+          }
+          KOT
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Download VPN core (as libcore.so)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          exec > >(tee -a /tmp/all.log) 2>&1
+          mkdir -p /tmp/core EpicClient/app/src/main/jniLibs/arm64-v8a
+          gh release download --repo CluvexStudio/Aether \
+            --pattern 'aether-android-arm64.tar.gz' \
+            --pattern 'aether-android-arm64.tar.gz.sha256' --dir /tmp/core
+          cd /tmp/core
+          echo "$(cut -d' ' -f1 aether-android-arm64.tar.gz.sha256)  aether-android-arm64.tar.gz" | sha256sum -c -
+          tar -xzf aether-android-arm64.tar.gz
+          BIN=$(find . -type f -name aether | head -1)
+          test -n "$BIN"
+          cp "$BIN" "$GITHUB_WORKSPACE/EpicClient/app/src/main/jniLibs/arm64-v8a/libcore.so"
+      - name: Build release APK (minified)
+        working-directory: EpicClient
+        run: |
+          exec > >(tee -a /tmp/all.log) 2>&1
+          gradle assembleRelease --console=plain
+      - name: Show errors in summary
+        if: failure()
+        run: |
+          {
+            echo '## آخرین خطوط لاگ (این بخش را کپی کنید)'
+            echo '```'
+            grep -n -E "^e: |error:|FAILED|What went wrong|Caused by|Could not|No such file|cannot|Exception" /tmp/all.log | head -40
+            echo '-----'
+            tail -n 40 /tmp/all.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Epic-apk
+          path: EpicClient/app/build/outputs/apk/release/*.apk
